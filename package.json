@@ -1,6 +1,6 @@
 {
     "name": "stepwright",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "A powerful web scraping library built with Playwright",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
@@ -43,12 +43,12 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/lablnet/stepwright.git"
+        "url": "https://github.com/Framework-Island/stepwright"
     },
     "bugs": {
-        "url": "https://github.com/lablnet/stepwright/issues"
+        "url": "https://github.com/Framework-Island/stepwright/issues"
     },
-    "homepage": "https://github.com/lablnet/stepwright#readme",
+    "homepage": "https://github.com/Framework-Island/stepwright/stepwright#readme",
     "publishConfig": {
         "access": "public"
     },
