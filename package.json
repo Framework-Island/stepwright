@@ -1,6 +1,6 @@
 {
     "name": "stepwright",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "A powerful web scraping library built with Playwright",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
