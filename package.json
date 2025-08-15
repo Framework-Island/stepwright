@@ -13,19 +13,31 @@
         "dev": "tsc --watch",
         "clean": "rimraf dist",
         "prebuild": "npm run clean",
-        "test": "vitest",
+        "test": "vitest run",
         "test:watch": "vitest --watch",
         "test:coverage": "vitest --coverage",
         "lint": "eslint src/**/*.ts",
         "format": "prettier --write src/**/*.ts",
-        "prepare": "npm run build"
+        "prepare": "npm run build",
+        "prepublishOnly": "npm run test && npm run build",
+        "publish": "npm publish",
+        "publish:patch": "npm version patch && npm publish",
+        "publish:minor": "npm version minor && npm publish",
+        "publish:major": "npm version major && npm publish"
     },
     "keywords": [
         "web-scraping",
         "playwright",
         "automation",
         "browser-automation",
-        "data-extraction"
+        "data-extraction",
+        "web-crawler",
+        "puppeteer-alternative",
+        "selenium-alternative",
+        "declarative-scraping",
+        "web-automation",
+        "headless-browser",
+        "scraping-framework"
     ],
     "author": "Muhammad Umer Farooq <umer@lablnet.com>",
     "license": "MIT",
@@ -37,6 +49,9 @@
         "url": "https://github.com/lablnet/stepwright/issues"
     },
     "homepage": "https://github.com/lablnet/stepwright#readme",
+    "publishConfig": {
+        "access": "public"
+    },
     "dependencies": {
         "playwright": "^1.54.1"
     },
