@@ -4,20 +4,21 @@
 
 export type SelectorType = 'id' | 'class' | 'tag' | 'xpath';
 
-export type DataType = 'text' | 'html' | 'value' | 'default';
+export type DataType = 'text' | 'html' | 'value' | 'default' | 'attribute';
 
 export interface BaseStep {
   id: string;
   description?: string;
   object_type?: SelectorType;
   object?: string;
-  action: 'navigate' | 'input' | 'click' | 'data' | 'scroll' | 'download' | 'foreach' | 'open' | 'savePDF' | 'printToPDF';
+  action: 'navigate' | 'input' | 'click' | 'data' | 'scroll' | 'eventBaseDownload' | 'foreach' | 'open' | 'savePDF' | 'printToPDF' | 'downloadPDF' | 'downloadFile';
   value?: string;
   key?: string; // property key when collecting data
   data_type?: DataType;
   wait?: number; // optional wait in ms after performing the step
   terminateonerror?: boolean;
   subSteps?: BaseStep[]; // for foreach/open
+  autoScroll?: boolean; // for foreach action - controls automatic scrolling (default: true)
 }
 
 export interface PaginationConfig {
