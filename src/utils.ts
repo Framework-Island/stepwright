@@ -107,3 +107,37 @@ export function cloneStepWithIndex(step: import('./types').BaseStep, idx: number
   }
   return cloned;
 }
+
+/**
+ * Flatten nested foreach results into an array.
+ * 
+ * @param {object} item - Dictionary that may contain nested item_* keys.
+ * 
+ * @since v1.0.0
+ * @author Muhammad Umer Farooq <umer@lablnet.com>
+ * 
+ * @returns {any} - Either a flattened array of items or the original item.
+ * @since v1.0.0
+ * @company Framework Island
+ */
+export function flattenNestedForeachResults(item: Record<string, any>): any {
+  // Check if item contains nested item_* keys (from nested foreach)
+  const nestedItemKeys = Object.keys(item).filter(k => k.startsWith('item_'));
+  if (nestedItemKeys.length > 0) {
+    // Flatten nested items into an array
+    const flattenedItems: any[] = [];
+    for (const k of nestedItemKeys.sort((a, b) => {
+      const aIdx = parseInt(a.split('_')[1]);
+      const bIdx = parseInt(b.split('_')[1]);
+      return aIdx - bIdx;
+    })) {
+      if (item[k] && Object.keys(item[k]).length > 0) {
+        flattenedItems.push(item[k]);
+      }
+    }
+    return flattenedItems;
+  } else {
+    // No nested items, return item as is
+    return item;
+  }
+}
