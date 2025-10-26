@@ -1,7 +1,7 @@
 import { Page } from 'playwright';
 import { click } from './scraper';
 import { TabTemplate, PaginationConfig } from './types';
-import { locatorFor } from './utils';
+import { locatorFor, flattenNestedForeachResults } from './utils';
 import { executeStepList } from './step-executor';
 
 // Import global types
@@ -42,7 +42,7 @@ export async function executeTab(
   // 1. Execute init steps once if provided
   if (template.initSteps && template.initSteps.length > 0) {
     console.log('--- Running initSteps ---');
-    await executeStepList(page, template.initSteps, {});
+    await executeStepList(page, template.initSteps, {}, onResult);
   }
 
   const { pagination } = template;
@@ -104,7 +104,7 @@ export async function executeTab(
     // After all pagination, run perPageSteps once
     const collected: Record<string, any> = {};
     const stepsForPage = template.perPageSteps && template.perPageSteps.length > 0 ? template.perPageSteps : (template.steps ?? []);
-    await executeStepList(page, stepsForPage, collected);
+    await executeStepList(page, stepsForPage, collected, onResult);
     if (Object.keys(collected).length > 0) {
       const itemKeys = Object.keys(collected).filter(key => key.startsWith('item_'));
       let resultIndex = 0;
@@ -112,9 +112,10 @@ export async function executeTab(
         for (const key of itemKeys) {
           const itemData = collected[key];
           if (itemData && Object.keys(itemData).length > 0) {
-            results.push(itemData);
+            const flattenedResult = flattenNestedForeachResults(itemData);
+            results.push(flattenedResult);
             if (onResult && !(global as any).onResultCallback) {
-              await onResult(itemData, resultIndex);
+              await onResult(flattenedResult, resultIndex);
             }
             resultIndex++;
           }
@@ -144,7 +145,7 @@ export async function executeTab(
 
     const stepsForPage = template.perPageSteps && template.perPageSteps.length > 0 ? template.perPageSteps : (template.steps ?? []);
 
-    await executeStepList(page, stepsForPage, collected);
+    await executeStepList(page, stepsForPage, collected, onResult);
 
     // after gathering data for this page
     if (Object.keys(collected).length > 0) {
@@ -155,10 +156,11 @@ export async function executeTab(
         for (const key of itemKeys) {
           const itemData = collected[key];
           if (itemData && Object.keys(itemData).length > 0) {
-            results.push(itemData);
-            // Call callback if provided (but only if not already called by foreach)
+            const flattenedResult = flattenNestedForeachResults(itemData);
+            results.push(flattenedResult);
+            // Call callback if provided (but only if not already called by foreach streaming)
             if (onResult && !(global as any).onResultCallback) {
-              await onResult(itemData, resultIndex);
+              await onResult(flattenedResult, resultIndex);
             }
             resultIndex++;
           }
