@@ -261,7 +261,7 @@ describe('Integration Tests', () => {
             },
             {
               id: 'download_text_file',
-              action: 'download',
+              action: 'eventBaseDownload',
               object_type: 'class',
               object: 'download-link',
               value: path.join(downloadDir, '{{page_title}}_text.txt'),
