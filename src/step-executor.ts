@@ -9,8 +9,9 @@ import {
 } from './scraper';
 import fs from 'fs';
 import path from 'path';
+import { request } from 'playwright';
 import { BaseStep, SelectorType } from './types';
-import { locatorFor, replaceDataPlaceholders, cloneStepWithIndex } from './utils';
+import { locatorFor, replaceDataPlaceholders, cloneStepWithIndex, flattenNestedForeachResults } from './utils';
 
 // Import global types
 import './global-types';
@@ -117,7 +118,9 @@ export async function executeStepInContext(
 export async function executeStep(
   page: Page,
   step: BaseStep,
-  collector: Record<string, any>
+  collector: Record<string, any>,
+  onResult?: (result: Record<string, any>, index: number) => void | Promise<void>,
+  scopeLocator?: Locator
 ): Promise<void> {
   console.log(`➡️  Step \`${step.id}\` (${step.action})`);
   switch (step.action) {
@@ -155,40 +158,73 @@ export async function executeStep(
     }
     case 'data': {
       try {
-        // Check if element exists first
-        const locator = locatorFor(page, step.object_type as SelectorType | undefined, step.object ?? '');
+        // For attribute extraction, strip /@attribute from selector when checking existence
+        let checkSelector = step.object ?? '';
+        if (step.data_type === 'attribute' && checkSelector.match(/\/@\w+$/)) {
+          checkSelector = checkSelector.replace(/\/@\w+$/, '');
+        }
+
+        // Check if element exists first - use scopeLocator if provided (for foreach context)
+        const locator = scopeLocator
+          ? locatorFor(
+              scopeLocator as any,
+              step.object_type as SelectorType | undefined,
+              checkSelector
+            )
+          : locatorFor(
+              page,
+              step.object_type as SelectorType | undefined,
+              checkSelector
+            );
         const count = await locator.count();
-        
+
         if (count === 0) {
-          console.log(`   ⚠️  Element not found: ${step.object} - skipping data extraction`);
+          console.log(
+            `   ⚠️  Element not found: ${checkSelector} - skipping data extraction`
+          );
           const key = step.key || step.id || 'data';
-          collector[key] = ''; // Set to empty string when element not found
+          collector[key] = null; // Set to null when element not found
           return;
         }
-        
-        const value = await getData(
-          page,
-          step.object_type as SelectorType,
-          step.object ?? '',
-          step.data_type ?? 'default',
-          step.wait ?? 0
-        );
+
+        // Extract data from the scoped locator
+        let value: string;
+        if (step.data_type === 'text') {
+          value = (await locator.first().textContent()) ?? '';
+        } else if (step.data_type === 'html') {
+          value = await locator.first().innerHTML();
+        } else if (step.data_type === 'value') {
+          value = await locator.first().inputValue();
+        } else if (step.data_type === 'attribute') {
+          const attrMatch = step.object?.match(/\/@(\w+)$/);
+          if (attrMatch) {
+            const attrName = attrMatch[1];
+            value = (await locator.first().getAttribute(attrName)) ?? '';
+          } else {
+            value = (await locator.first().textContent()) ?? '';
+          }
+        } else {
+          // default
+          value = (await locator.first().textContent()) ?? '';
+        }
         const key = step.key || step.id || 'data';
         collector[key] = value;
         console.log(`Step Data: ${key}: ${value}`);
       } catch (err: any) {
-        console.log(`   ⚠️  Data extraction failed for ${step.object}: ${err.message}`);
+        console.log(
+          `   ⚠️  Data extraction failed for ${step.object}: ${err.message}`
+        );
         const key = step.key || step.id || 'data';
-        collector[key] = ''; // Set to empty string when data can't be extracted
+        collector[key] = null; // Set to null when data can't be extracted
         // Don't throw error, just continue
       }
       break;
     }
-    case 'download': {
+    case 'eventBaseDownload': {
       // check if element exists.
       // Save downloaded file to path provided in step.value (defaults ./downloads)
       if (!step.value) {
-        throw new Error(`download step ${step.id} requires 'value' as target filepath`);
+        throw new Error(`eventBaseDownload step ${step.id} requires 'value' as target filepath`);
       }
 
       // Determine the key under which to store the downloaded file path
@@ -240,36 +276,43 @@ export async function executeStep(
       console.log(`   🔁 foreach found ${count} items for selector ${step.object}`);
       for (let idx = 0; idx < count; idx++) {
         const current = locatorAll.nth(idx);
-        await current.scrollIntoViewIfNeeded();
-        
+
+        // Only scroll if autoScroll is not explicitly set to false
+        if (step.autoScroll !== false) {
+          await current.scrollIntoViewIfNeeded();
+        }
+
         // Create a separate collector for each iteration
         const itemCollector: Record<string, any> = {};
-        
+
         // For each subStep clone and replace placeholders
         for (const s of step.subSteps) {
           const cloned = cloneStepWithIndex(s, idx);
           try {
-            // Execute step in the context of the current item
-            await executeStepInContext(page, current, cloned, itemCollector);
+            await executeStep(page, cloned, itemCollector, onResult, current);
           } catch (err: any) {
             console.log(`⚠️  sub-step '${cloned.id}' failed: ${err.message}`);
             if (cloned.terminateonerror) throw err;
           }
         }
-        
+
         // Store the item collector with a unique key for this iteration
         collector[`item_${idx}`] = itemCollector;
-        
+
         // If we have collected data for this item, emit it immediately for streaming
         if (Object.keys(itemCollector).length > 0) {
-          console.log(`   📋 Collected data for item ${idx}:`, Object.keys(itemCollector));
-          
+          console.log(
+            `   📋 Collected data for item ${idx}:`,
+            Object.keys(itemCollector)
+          );
+
           // Emit the result immediately for streaming
           // We need to access the onResult callback from the parent context
           // This is a bit of a hack, but it works for immediate streaming
           if ((global as any).onResultCallback) {
             try {
-              await (global as any).onResultCallback(itemCollector, idx);
+              const flattenedResult = flattenNestedForeachResults(itemCollector);
+              await (global as any).onResultCallback(flattenedResult, idx);
             } catch (err) {
               console.log(`   ⚠️  Callback failed for item ${idx}: ${err}`);
             }
@@ -539,6 +582,103 @@ export async function executeStep(
       }
       break;
     }
+    case 'downloadFile':
+    case 'downloadPDF': {
+      if (!step.object) throw new Error('downloadPDF requires object locator');
+      if (!step.value)
+        throw new Error(
+          `downloadPDF step ${step.id} requires 'value' as target filepath`
+        );
+
+      const collectorKey = step.key || step.id || 'file';
+      let savedPath: string | null = null;
+
+      try {
+        // 1) Find the link and get its href
+        const link = locatorFor(
+          page,
+          step.object_type as SelectorType | undefined,
+          step.object
+        );
+        const present = (await link.count()) > 0;
+        if (!present) {
+          console.log(`   ⚠️  PDF link not found: ${step.object}`);
+          collector[collectorKey] = null;
+          break;
+        }
+
+        let href = await link.getAttribute('href');
+
+        // Fallback: if no href (javascript: handler), open in a new tab and use that URL
+        if (!href || href.startsWith('javascript')) {
+          const ctx = page.context();
+          const pagePromise = ctx
+            .waitForEvent('page', { timeout: 5000 })
+            .catch(() => null);
+          await link.click({ modifiers: ['Meta'] }).catch(() => link.click());
+          const newPage = await pagePromise;
+          if (newPage) {
+            await newPage
+              .waitForLoadState('domcontentloaded', { timeout: 15000 })
+              .catch(() => {});
+            href = newPage.url();
+            await newPage.close().catch(() => {});
+          }
+        }
+
+        if (!href) {
+          console.log(`   ⚠️  Could not resolve PDF URL from ${step.object}`);
+          collector[collectorKey] = null;
+          break;
+        }
+
+        // 2) Resolve to absolute URL
+        const hrefAbs = href.startsWith('http')
+          ? href
+          : new URL(href, page.url()).toString();
+
+        // 3) Download the binary with cookies + referer
+        const ctx = page.context();
+        const cookies = await ctx.cookies(hrefAbs);
+        const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+        const api = await request.newContext({
+          extraHTTPHeaders: {
+            ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+            Referer: page.url(),
+            'User-Agent': 'Mozilla/5.0'
+          }
+        });
+
+        const res = await api.get(hrefAbs);
+        if (!res.ok()) {
+          console.log(
+            `   📄 GET ${hrefAbs} -> ${res.status()} ${res.statusText()}`
+          );
+          await api.dispose();
+          collector[collectorKey] = null;
+          break;
+        }
+
+        const buffer = await res.body();
+        await api.dispose();
+
+        // 4) Save to disk (supports your {{placeholders}})
+        const resolvedPath =
+          replaceDataPlaceholders(step.value, collector) || step.value;
+        const dir = path.dirname(resolvedPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+        fs.writeFileSync(resolvedPath, buffer);
+        savedPath = resolvedPath;
+        console.log(`   📄 PDF saved to ${resolvedPath}`);
+      } catch (err: any) {
+        console.log(`   📄 downloadPDF failed: ${err.message}`);
+      } finally {
+        collector[collectorKey] = savedPath;
+      }
+      break;
+    }
     default:
       // Unhandled action – ignore to be future-proof
       break;
@@ -563,11 +703,16 @@ export async function executeStep(
  * @since v1.0.0
  * @company Framework Island
  */
-export async function executeStepList(page: Page, steps: BaseStep[], collected: Record<string, any>): Promise<void> {
+export async function executeStepList(
+  page: Page, 
+  steps: BaseStep[], 
+  collected: Record<string, any>,
+  onResult?: (result: Record<string, any>, index: number) => void | Promise<void>
+): Promise<void> {
   console.log(`📝 Executing ${steps.length} step(s)`);
   for (const step of steps) {
     try {
-      await executeStep(page, step, collected);
+      await executeStep(page, step, collected, onResult);
     } catch (err) {
       if (step.terminateonerror) {
         throw err;
