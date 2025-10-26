@@ -229,11 +229,30 @@ const getData = async (
     page: Page,
     type: SelectorType,
     selector: string,
-    data_type: 'text' | 'html' | 'value' | 'default' = 'default',
-    wait: number = 0
+    data_type: 'text' | 'html' | 'value' | 'default' | 'attribute' = 'default',
+    wait: number = 0,
+    attributeName?: string
 ): Promise<string> => {
+    // For attribute type, extract attribute name from selector if needed
+    let finalSelector = selector;
+    let finalAttributeName = attributeName;
+
+    if (data_type === 'attribute') {
+        const attrMatch = selector.match(/\/@(\w+)$/);
+        if (attrMatch) {
+            finalAttributeName = attrMatch[1];
+            // Remove the attribute part from selector for element selection
+            finalSelector = selector.replace(/\/@\w+$/, '');
+        }
+        if (!finalAttributeName) {
+            throw new Error(
+                'Attribute name is required for attribute data type. Use selector like //element/@attribute or specify attributeName'
+            );
+        }
+    }
+
     try {
-        const element = await elem(page, type, selector, wait);
+        const element = await elem(page, type, finalSelector, wait);
         
         // Check if element exists before trying to get data
         const count = await element.count();
@@ -248,6 +267,8 @@ const getData = async (
                 return await element.innerHTML();
             case 'value':
                 return await element.inputValue();
+            case 'attribute':
+                return (await element.getAttribute(finalAttributeName!)) ?? '';
             default:
                 return await element.innerText();
         }
