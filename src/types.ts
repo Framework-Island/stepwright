@@ -62,6 +62,7 @@ export interface TabTemplate {
 
 export interface RunOptions {
   browser?: import('playwright').LaunchOptions;
+  contextOptions?: import('playwright').BrowserContextOptions;
   /** Callback function to receive results as they're processed */
   onResult?: (result: Record<string, any>, index: number) => void | Promise<void>;
 }
