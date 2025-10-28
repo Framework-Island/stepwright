@@ -344,12 +344,21 @@ export async function executeStep(
 
         if (href) {
           // absolute or relative URL
-          if (!href.startsWith('http')) {
+          if (href.startsWith('//')) {
+            href = 'https:' + href;
+          } else if (!href.startsWith('http')) {
             const base = page.url();
             href = new URL(href, base).toString();
           }
           newPage = await context.newPage();
-          await newPage.goto(href, { waitUntil: 'networkidle' });
+          try {
+            await newPage.goto(href, { waitUntil: 'networkidle' });
+          } catch (err: any) {
+            // take page screenshot
+            await newPage?.screenshot({ path: `screenshot-${href}.png` });
+            console.log(`   ⚠️  Navigation failed for ${href}: ${err.message}`);
+            throw err;
+          }
         } else {
           // fallback: click with modifier to open new tab
           const pagePromise = context.waitForEvent('page');
