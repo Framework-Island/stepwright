@@ -36,7 +36,7 @@ export async function runScraper(
   options: RunOptions = {}
 ): Promise<Record<string, any>[]> {
   const browser = await getBrowser(options.browser || { headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext(options.contextOptions || {});
 
   const allResults: Record<string, any>[] = [];
 
@@ -75,7 +75,7 @@ export async function runScraperWithCallback(
   options: RunOptions = {}
 ): Promise<void> {
   const browser = await getBrowser(options.browser || { headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext(options.contextOptions || {});
 
   try {
     // Run each tab sequentially
