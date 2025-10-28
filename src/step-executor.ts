@@ -354,8 +354,6 @@ export async function executeStep(
           try {
             await newPage.goto(href, { waitUntil: 'networkidle' });
           } catch (err: any) {
-            // take page screenshot
-            await newPage?.screenshot({ path: `screenshot-${href}.png` });
             console.log(`   ⚠️  Navigation failed for ${href}: ${err.message}`);
             throw err;
           }
