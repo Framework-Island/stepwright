@@ -395,114 +395,304 @@ export async function executeStep(
       break;
     }
     case 'savePDF': {
-      // Save PDF content from current page to file
+      // Save the actual PDF binary from the current page or embedded viewer
       if (!step.value) {
         throw new Error(`savePDF step ${step.id} requires 'value' as target filepath`);
       }
 
       const collectorKey = step.key || step.id || 'file';
       let savedPath: string | null = null;
+      // After the guard above, we can safely treat step.value as string
+      const targetPathBase: string = step.value as string;
 
       try {
-        console.log(`   📄 Waiting for PDF content to load...`);
-        
-        // Strategy 1: Wait for DOM content loaded first, //timeout 10 minutes
+        // Ensure the page finished initial navigation
         try {
           await page.waitForLoadState('domcontentloaded', { timeout: step.wait ?? 600000 });
-          console.log(`   📄 DOM content loaded`);
-        } catch (domErr) {
-          console.log(`   📄 DOM content timeout, continuing anyway`);
+        } catch {}
+
+        // Try to resolve the direct PDF URL
+        let pdfUrl: string | null = null;
+
+        // 1) If the current URL points to a PDF (anywhere in the URL), use it or extract from query
+        const currentUrl = page.url();
+        console.log(`   📄 Current URL: ${currentUrl}`);
+        try {
+          const u = new URL(currentUrl);
+          const candidates = [
+            u.searchParams.get('file'),
+            u.searchParams.get('src'),
+            u.searchParams.get('document'),
+            u.searchParams.get('url')
+          ].filter(Boolean) as string[];
+          const paramPdf = candidates.find(v => /\.pdf/i.test(v));
+          if (paramPdf) {
+            pdfUrl = new URL(paramPdf, u.href).toString();
+          }
+        } catch {}
+        if (!pdfUrl && /\.pdf/i.test(currentUrl)) {
+          pdfUrl = currentUrl;
         }
-        
-        // Strategy 2: Wait for PDF-specific elements or indicators
-        let pdfReady = false;
-        const maxAttempts = 15; // Increased attempts for PDF loading
-        let attempts = 0;
-        
-        while (!pdfReady && attempts < maxAttempts) {
-          attempts++;
-          console.log(`   📄 Checking PDF readiness (attempt ${attempts}/${maxAttempts})`);
-          
+
+        // 2) Otherwise, try to discover PDF source from common viewer elements
+        if (!pdfUrl) {
           try {
-            // Check if page has PDF content indicators
-            const hasPdfContent = await page.evaluate(() => {
-              // Check for PDF viewer elements
-              const pdfViewer = document.querySelector('embed[type="application/pdf"]') ||
-                               document.querySelector('object[type="application/pdf"]') ||
-                               document.querySelector('iframe[src*=".pdf"]') ||
-                               document.querySelector('.pdf-viewer') ||
-                               document.querySelector('[data-pdf]');
-              
-              // Check if page content is substantial (not just loading screen)
-              const bodyText = document.body ? document.body.innerText : '';
-              const hasSubstantialContent = bodyText.length > 200; // Increased threshold
-              
-              // Check if page is visible
-              const isVisible = document.body && 
-                               document.body.style.display !== 'none' && 
-                               document.body.style.visibility !== 'hidden';
-              
-              // Check for PDF-specific content
-              const hasPdfText = bodyText.includes('PDF') || 
-                                bodyText.includes('Page') || 
-                                bodyText.includes('Agenda') ||
-                                bodyText.includes('Meeting');
-              
-              return {
-                hasPdfViewer: !!pdfViewer,
-                hasSubstantialContent,
-                isVisible,
-                bodyTextLength: bodyText.length,
-                hasPdfText
+            pdfUrl = await page.evaluate(() => {
+              const getAbs = (src?: string | null) => {
+                if (!src) return null;
+                try {
+                  return new URL(src, window.location.href).toString();
+                } catch {
+                  return src;
+                }
               };
+
+              const embed = document.querySelector('embed[type="application/pdf"]') as HTMLObjectElement | null;
+              if (embed && embed.getAttribute('src')) return getAbs(embed.getAttribute('src'));
+
+              const objectEl = document.querySelector('object[type="application/pdf"]') as HTMLObjectElement | null;
+              if (objectEl && objectEl.getAttribute('data')) return getAbs(objectEl.getAttribute('data'));
+
+              const iframe = Array.from(document.querySelectorAll('iframe')).find(f => {
+                const s = f.getAttribute('src') || '';
+                return /\.pdf/i.test(s) || s.includes('pdf');
+              }) as HTMLIFrameElement | undefined;
+              if (iframe && iframe.getAttribute('src')) return getAbs(iframe.getAttribute('src'));
+
+              return null;
             });
-            
-            console.log(`   📄 PDF check:`, hasPdfContent);
-            
-            // Only consider ready if we have substantial content OR PDF text
-            if (hasPdfContent.hasSubstantialContent || hasPdfContent.hasPdfText) {
-              pdfReady = true;
-              console.log(`   📄 PDF content appears ready (substantial content or PDF text found)`);
-              break;
-            } else {
-              console.log(`   📄 PDF not ready yet - content: ${hasPdfContent.hasSubstantialContent}, text length: ${hasPdfContent.bodyTextLength}, hasPdfText: ${hasPdfContent.hasPdfText}`);
-            }
-            
-            // Wait a bit before next check
-            await page.waitForTimeout(2000); // Increased wait time
-            
-          } catch (checkErr: any) {
-            console.log(`   📄 PDF check failed: ${checkErr.message}`);
-            await page.waitForTimeout(2000);
+          } catch {}
+        }
+
+        // 3) Additional wait if requested (helps some viewers populate 'src')
+        if (!pdfUrl && step.wait && step.wait > 0) {
+          await page.waitForTimeout(step.wait);
+          try {
+            // Try again once after waiting
+            pdfUrl = await page.evaluate(() => {
+              const iframe = Array.from(document.querySelectorAll('iframe')).find(f => f.getAttribute('src')) as HTMLIFrameElement | undefined;
+              return iframe?.src || null;
+            });
+          } catch {}
+        }
+
+        // If we couldn't find a PDF URL, abort instead of rendering HTML with page.pdf
+        if (!pdfUrl) {
+          console.log('   📄 Direct PDF URL not found. Skipping save (no page.pdf fallback).');
+          break;
+        }
+
+        // Build candidate URLs and try them until one succeeds
+        const candidates: string[] = [];
+        const isAbsolute = /^https?:/i.test(pdfUrl);
+        if (isAbsolute) {
+          candidates.push(pdfUrl);
+        } else {
+          // 1) Same-origin resolution
+          candidates.push(new URL(pdfUrl, currentUrl).toString());
+
+          // 2) Granicus S3 pattern: <prefix>/<filename>.pdf
+          // Example filename: queencreekaz_<hash>.pdf -> folder "queencreekaz"
+          const m = pdfUrl.match(/^([a-z0-9-]+)_(.+\.pdf)$/i);
+          if (m) {
+            const city = m[1];
+            const fileName = `${m[1]}_${m[2]}`; // full filename again
+            candidates.push(`https://granicus_production_attachments.s3.amazonaws.com/${city}/${fileName}`);
           }
         }
-        
-        // Strategy 3: Additional wait for any dynamic content
-        if (step.wait && step.wait > 0) {
-          console.log(`   📄 Additional wait: ${step.wait}ms`);
-          await page.waitForTimeout(step.wait);
+
+        // 3) If current page is a Granicus DocumentViewer, try explicit download query param variants
+        try {
+          const urlObj = new URL(currentUrl);
+          if (/DocumentViewer\.php$/i.test(urlObj.pathname) && urlObj.searchParams.has('file')) {
+            const origin = `${urlObj.protocol}//${urlObj.host}`;
+            const fileParam = urlObj.searchParams.get('file') as string;
+            const baseViewer = `${origin}${urlObj.pathname}`;
+            // Add explicit download query attempts
+            const withDownload = new URL(baseViewer);
+            withDownload.searchParams.set('file', fileParam);
+            withDownload.searchParams.set('download', '1');
+            candidates.push(withDownload.toString());
+
+            const withDownloadAndView = new URL(baseViewer);
+            withDownloadAndView.searchParams.set('file', fileParam);
+            withDownloadAndView.searchParams.set('view', urlObj.searchParams.get('view') || '1');
+            withDownloadAndView.searchParams.set('download', '1');
+            candidates.push(withDownloadAndView.toString());
+
+            // Also try direct origin + file param path as a last resort
+            if (/\.pdf$/i.test(fileParam)) {
+              candidates.push(`${origin}/${fileParam}`);
+            }
+          }
+        } catch {}
+
+        // Log URLs for debugging
+        console.log(`   📄 Current URL: ${currentUrl}`);
+        console.log(`   📄 Candidate PDF URLs:`, candidates);
+
+        // Download the first successful candidate
+        let downloadedBuffer: Buffer | null = null;
+        for (const candidateUrl of candidates) {
+          try {
+            const ctx = page.context();
+            const cookies = await ctx.cookies(candidateUrl);
+            const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+            const api = await request.newContext({
+              extraHTTPHeaders: {
+                ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+                Referer: currentUrl,
+                'User-Agent': 'Mozilla/5.0'
+              }
+            });
+            const res = await api.get(candidateUrl);
+            if (res.ok()) {
+              downloadedBuffer = await res.body();
+              await api.dispose();
+              pdfUrl = candidateUrl; // final URL used
+              break;
+            } else {
+              console.log(`   📄 GET ${candidateUrl} -> ${res.status()} ${res.statusText()}`);
+              await api.dispose();
+            }
+          } catch (e: any) {
+            console.log(`   📄 GET ${candidateUrl} failed: ${e.message}`);
+          }
         }
-        
-        console.log(`   📄 Capturing PDF...`);
-        // Get the PDF content as buffer
-        const pdfBuffer = await page.pdf({ format: 'A4' });
-        
-        // Ensure directory exists
-        const savePath = replaceDataPlaceholders(step.value, collector) || step.value || '';
-        const dir = path.dirname(savePath);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
+        if (!downloadedBuffer) {
+          console.log('   📄 All candidate PDF URLs failed. Trying viewer download fallback...');
+          // Main page attempt (deep shadow click only)
+          let saved = false;
+          const clickedMain = await page.evaluate(async () => {
+            const targetIds = ['download', 'save'];
+            const visited = new Set<Node>();
+            function tryClick(node: Node): boolean {
+              if (visited.has(node)) return false;
+              visited.add(node);
+              const el = node as HTMLElement;
+              if (el && el.id && targetIds.includes(el.id)) { el.click(); return true; }
+              const elem = node as Element;
+              if (!elem) return false;
+              const sr = (elem as any).shadowRoot as ShadowRoot | undefined;
+              if (sr) for (const child of Array.from(sr.children)) { if (tryClick(child)) return true; }
+              for (const child of Array.from(elem.children)) { if (tryClick(child)) return true; }
+              return false;
+            }
+            return tryClick(document.documentElement);
+          }).catch(() => false as any);
+          if (clickedMain) {
+            const dl = await page.waitForEvent('download', { timeout: 5000 }).catch(() => null);
+            if (dl) {
+              const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
+              const dir = path.dirname(resolvedPath);
+              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+              await dl.saveAs(resolvedPath);
+              savedPath = resolvedPath;
+              console.log(`   📄 PDF saved via viewer download to ${resolvedPath}`);
+              saved = true;
+            }
+          }
+
+          // Frames attempt
+          if (!saved) {
+            for (const frame of page.frames()) {
+              if (frame === page.mainFrame()) continue;
+              const clicked = await frame.evaluate(async () => {
+                const targetIds = ['download', 'save'];
+                const visited = new Set<Node>();
+                function tryClick(node: Node): boolean {
+                  if (visited.has(node)) return false;
+                  visited.add(node);
+                  const el = node as HTMLElement;
+                  if (el && el.id && targetIds.includes(el.id)) { el.click(); return true; }
+                  const elem = node as Element;
+                  if (!elem) return false;
+                  const sr = (elem as any).shadowRoot as ShadowRoot | undefined;
+                  if (sr) for (const child of Array.from(sr.children)) { if (tryClick(child)) return true; }
+                  for (const child of Array.from(elem.children)) { if (tryClick(child)) return true; }
+                  return false;
+                }
+                return tryClick(document.documentElement);
+              }).catch(() => false as any);
+              if (clicked) {
+                const dl = await page.waitForEvent('download', { timeout: 5000 }).catch(() => null);
+                if (dl) {
+                  const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
+                  const dir = path.dirname(resolvedPath);
+                  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                  await dl.saveAs(resolvedPath);
+                  savedPath = resolvedPath;
+                  console.log(`   📄 PDF saved via viewer download to ${resolvedPath}`);
+                  saved = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          // Non-click fallback: try to scrape a direct download link href and fetch it
+          if (!saved) {
+            try {
+              const hrefs = await page.evaluate(() => {
+                const links: string[] = [];
+                const anchors = Array.from(document.querySelectorAll('a')) as HTMLAnchorElement[];
+                for (const a of anchors) {
+                  const text = (a.textContent || '').toLowerCase();
+                  const aria = (a.getAttribute('aria-label') || '').toLowerCase();
+                  if (a.hasAttribute('download') || text.includes('download') || aria.includes('download')) {
+                    if (a.href) links.push(a.href);
+                  }
+                }
+                return links.slice(0, 3);
+              });
+              if (hrefs && hrefs.length > 0) {
+                for (const href of hrefs) {
+                  try {
+                    const ctx = page.context();
+                    const cookies = await ctx.cookies(href);
+                    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+                    const api = await request.newContext({
+                      extraHTTPHeaders: {
+                        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+                        Referer: currentUrl,
+                        'User-Agent': 'Mozilla/5.0',
+                        Accept: 'application/pdf,*/*'
+                      }
+                    });
+                    const res = await api.get(href);
+                    if (res.ok()) {
+                      const body = await res.body();
+                      const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
+                      const dir = path.dirname(resolvedPath);
+                      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                      fs.writeFileSync(resolvedPath, body);
+                      savedPath = resolvedPath;
+                      console.log(`   📄 PDF saved via scraped href to ${resolvedPath}`);
+                      await api.dispose();
+                      saved = true;
+                      break;
+                    }
+                    await api.dispose();
+                  } catch {}
+                }
+              }
+            } catch {}
+          }
+
+          if (!saved) {
+            console.log('   📄 Viewer download fallback failed.');
+          }
+        } else {
+          const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
+          const dir = path.dirname(resolvedPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(resolvedPath, downloadedBuffer);
+          savedPath = resolvedPath;
+          console.log(`   📄 PDF saved to ${resolvedPath} (from ${pdfUrl})`);
         }
-        
-        // Save the PDF
-        fs.writeFileSync(savePath, pdfBuffer);
-        savedPath = savePath;
-        console.log(`   📄 PDF saved to ${savePath}`);
       } catch (err: any) {
-        console.log(`   📄 PDF save failed: ${err.message}`);
-        // Don't throw error, just continue
+        console.log(`   📄 savePDF failed: ${err.message}`);
       } finally {
-        // Record the file path (or null if not saved) in the collector
         collector[collectorKey] = savedPath;
       }
       break;
