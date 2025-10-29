@@ -490,47 +490,11 @@ export async function executeStep(
         } else {
           // 1) Same-origin resolution
           candidates.push(new URL(pdfUrl, currentUrl).toString());
-
-          // 2) Granicus S3 pattern: <prefix>/<filename>.pdf
-          // Example filename: queencreekaz_<hash>.pdf -> folder "queencreekaz"
-          const m = pdfUrl.match(/^([a-z0-9-]+)_(.+\.pdf)$/i);
-          if (m) {
-            const city = m[1];
-            const fileName = `${m[1]}_${m[2]}`; // full filename again
-            candidates.push(`https://granicus_production_attachments.s3.amazonaws.com/${city}/${fileName}`);
-          }
         }
-
-        // 3) If current page is a Granicus DocumentViewer, try explicit download query param variants
-        try {
-          const urlObj = new URL(currentUrl);
-          if (/DocumentViewer\.php$/i.test(urlObj.pathname) && urlObj.searchParams.has('file')) {
-            const origin = `${urlObj.protocol}//${urlObj.host}`;
-            const fileParam = urlObj.searchParams.get('file') as string;
-            const baseViewer = `${origin}${urlObj.pathname}`;
-            // Add explicit download query attempts
-            const withDownload = new URL(baseViewer);
-            withDownload.searchParams.set('file', fileParam);
-            withDownload.searchParams.set('download', '1');
-            candidates.push(withDownload.toString());
-
-            const withDownloadAndView = new URL(baseViewer);
-            withDownloadAndView.searchParams.set('file', fileParam);
-            withDownloadAndView.searchParams.set('view', urlObj.searchParams.get('view') || '1');
-            withDownloadAndView.searchParams.set('download', '1');
-            candidates.push(withDownloadAndView.toString());
-
-            // Also try direct origin + file param path as a last resort
-            if (/\.pdf$/i.test(fileParam)) {
-              candidates.push(`${origin}/${fileParam}`);
-            }
-          }
-        } catch {}
 
         // Log URLs for debugging
         console.log(`   📄 Current URL: ${currentUrl}`);
         console.log(`   📄 Candidate PDF URLs:`, candidates);
-
         // Download the first successful candidate
         let downloadedBuffer: Buffer | null = null;
         for (const candidateUrl of candidates) {
@@ -561,126 +525,122 @@ export async function executeStep(
         }
         if (!downloadedBuffer) {
           console.log('   📄 All candidate PDF URLs failed. Trying viewer download fallback...');
-          // Main page attempt (deep shadow click only)
+          
+          // Strategy 1: Try to extract PDF URL from embed element and fetch directly
           let saved = false;
-          const clickedMain = await page.evaluate(async () => {
-            const targetIds = ['download', 'save'];
-            const visited = new Set<Node>();
-            function tryClick(node: Node): boolean {
-              if (visited.has(node)) return false;
-              visited.add(node);
-              const el = node as HTMLElement;
-              if (el && el.id && targetIds.includes(el.id)) { el.click(); return true; }
-              const elem = node as Element;
-              if (!elem) return false;
-              const sr = (elem as any).shadowRoot as ShadowRoot | undefined;
-              if (sr) for (const child of Array.from(sr.children)) { if (tryClick(child)) return true; }
-              for (const child of Array.from(elem.children)) { if (tryClick(child)) return true; }
-              return false;
+          
+          try {
+            const embedPdfUrl = await page.evaluate(() => {
+              const embed = document.querySelector('embed[type="application/x-google-chrome-pdf"]') as HTMLEmbedElement;
+              if (embed && embed.getAttribute('original-url')) {
+                return embed.getAttribute('original-url');
+              }
+              return null;
+            });
+            
+            if (embedPdfUrl) {
+              console.log(`   📄 Found PDF URL in embed: ${embedPdfUrl}`);
+              try {
+                const ctx = page.context();
+                const cookies = await ctx.cookies(embedPdfUrl);
+                const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+                const api = await request.newContext({
+                  extraHTTPHeaders: {
+                    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+                    Referer: currentUrl,
+                    'User-Agent': 'Mozilla/5.0'
+                  }
+                });
+                const res = await api.get(embedPdfUrl);
+                if (res.ok()) {
+                  const body = await res.body();
+                  const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
+                  const dir = path.dirname(resolvedPath);
+                  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                  fs.writeFileSync(resolvedPath, body);
+                  savedPath = resolvedPath;
+                  console.log(`   📄 PDF saved from embed URL to ${resolvedPath}`);
+                  await api.dispose();
+                  saved = true;
+                }
+                await api.dispose();
+              } catch (e: any) {
+                console.log(`   📄 Failed to fetch from embed URL: ${e.message}`);
+              }
             }
-            return tryClick(document.documentElement);
-          }).catch(() => false as any);
-          if (clickedMain) {
-            const dl = await page.waitForEvent('download', { timeout: 5000 }).catch(() => null);
-            if (dl) {
-              const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
-              const dir = path.dirname(resolvedPath);
-              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-              await dl.saveAs(resolvedPath);
-              savedPath = resolvedPath;
-              console.log(`   📄 PDF saved via viewer download to ${resolvedPath}`);
-              saved = true;
-            }
+          } catch (e: any) {
+            console.log(`   📄 Embed extraction failed: ${e.message}`);
           }
-
-          // Frames attempt
+          
+          // Strategy 2: Wait for PDF viewer and click download button
           if (!saved) {
-            for (const frame of page.frames()) {
-              if (frame === page.mainFrame()) continue;
-              const clicked = await frame.evaluate(async () => {
-                const targetIds = ['download', 'save'];
-                const visited = new Set<Node>();
-                function tryClick(node: Node): boolean {
-                  if (visited.has(node)) return false;
-                  visited.add(node);
-                  const el = node as HTMLElement;
-                  if (el && el.id && targetIds.includes(el.id)) { el.click(); return true; }
-                  const elem = node as Element;
-                  if (!elem) return false;
-                  const sr = (elem as any).shadowRoot as ShadowRoot | undefined;
-                  if (sr) for (const child of Array.from(sr.children)) { if (tryClick(child)) return true; }
-                  for (const child of Array.from(elem.children)) { if (tryClick(child)) return true; }
+            console.log('   📄 Waiting for PDF viewer to load...');
+            try {
+              // Wait for pdf-viewer element to appear
+              await page.waitForSelector('pdf-viewer', { timeout: 10000 }).catch(() => null);
+              await page.waitForTimeout(2000); // Additional wait for shadow DOMs to initialize
+              
+              console.log('   📄 Searching for download button...');
+              const clicked = await page.evaluate(() => {
+                // Try direct selector path
+                const pdfViewer = document.querySelector('pdf-viewer');
+                if (pdfViewer && pdfViewer.shadowRoot) {
+                  const toolbar = pdfViewer.shadowRoot.querySelector('viewer-toolbar');
+                  if (toolbar && toolbar.shadowRoot) {
+                    const downloadControls = toolbar.shadowRoot.querySelector('viewer-download-controls');
+                    if (downloadControls && downloadControls.shadowRoot) {
+                      const saveButton = downloadControls.shadowRoot.querySelector('#save') as HTMLElement;
+                      if (saveButton) {
+                        saveButton.click();
+                        return true;
+                      }
+                    }
+                  }
+                }
+                
+                // Fallback: recursive search
+                function findAndClickDownload(root: Element | Document | ShadowRoot): boolean {
+                  const walker = document.createTreeWalker(root as Node, NodeFilter.SHOW_ELEMENT);
+                  let node: Node | null;
+                  while ((node = walker.nextNode())) {
+                    const el = node as HTMLElement;
+                    if (el.id === 'save' || el.id === 'download') {
+                      el.click();
+                      return true;
+                    }
+                    if (el.shadowRoot) {
+                      if (findAndClickDownload(el.shadowRoot)) return true;
+                    }
+                  }
                   return false;
                 }
-                return tryClick(document.documentElement);
-              }).catch(() => false as any);
+                return findAndClickDownload(document);
+              }).catch(() => false);
+              
               if (clicked) {
-                const dl = await page.waitForEvent('download', { timeout: 5000 }).catch(() => null);
+                console.log('   📄 Found and clicked download button! Waiting for download...');
+                const dl = await page.waitForEvent('download', { timeout: 10000 }).catch(() => null);
                 if (dl) {
                   const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
                   const dir = path.dirname(resolvedPath);
                   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
                   await dl.saveAs(resolvedPath);
                   savedPath = resolvedPath;
-                  console.log(`   📄 PDF saved via viewer download to ${resolvedPath}`);
+                  console.log(`   📄 PDF saved via download button to ${resolvedPath}`);
                   saved = true;
-                  break;
+                } else {
+                  console.log('   📄 Download button clicked but no download event received.');
                 }
+              } else {
+                console.log('   📄 Download button not found.');
               }
+            } catch (e: any) {
+              console.log(`   📄 PDF viewer approach failed: ${e.message}`);
             }
           }
-
-          // Non-click fallback: try to scrape a direct download link href and fetch it
+          
           if (!saved) {
-            try {
-              const hrefs = await page.evaluate(() => {
-                const links: string[] = [];
-                const anchors = Array.from(document.querySelectorAll('a')) as HTMLAnchorElement[];
-                for (const a of anchors) {
-                  const text = (a.textContent || '').toLowerCase();
-                  const aria = (a.getAttribute('aria-label') || '').toLowerCase();
-                  if (a.hasAttribute('download') || text.includes('download') || aria.includes('download')) {
-                    if (a.href) links.push(a.href);
-                  }
-                }
-                return links.slice(0, 3);
-              });
-              if (hrefs && hrefs.length > 0) {
-                for (const href of hrefs) {
-                  try {
-                    const ctx = page.context();
-                    const cookies = await ctx.cookies(href);
-                    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-                    const api = await request.newContext({
-                      extraHTTPHeaders: {
-                        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-                        Referer: currentUrl,
-                        'User-Agent': 'Mozilla/5.0',
-                        Accept: 'application/pdf,*/*'
-                      }
-                    });
-                    const res = await api.get(href);
-                    if (res.ok()) {
-                      const body = await res.body();
-                      const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
-                      const dir = path.dirname(resolvedPath);
-                      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-                      fs.writeFileSync(resolvedPath, body);
-                      savedPath = resolvedPath;
-                      console.log(`   📄 PDF saved via scraped href to ${resolvedPath}`);
-                      await api.dispose();
-                      saved = true;
-                      break;
-                    }
-                    await api.dispose();
-                  } catch {}
-                }
-              }
-            } catch {}
-          }
-
-          if (!saved) {
-            console.log('   📄 Viewer download fallback failed.');
+            console.log('   📄 All viewer download fallbacks failed.');
           }
         } else {
           const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
