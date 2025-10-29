@@ -594,7 +594,7 @@ packages:
   assertion-error@1.1.0:
     resolution: {integrity: sha512-jgsaNduz+ndvGyFt3uSuWqvy4lCnIJiovtouQN5JZHOKCS2QuhEdbcQHFhVksz2N2U9hXJo8odG7ETyWlEeuDw==}
 
-  balanced-match@1.0.3:
+  balanced-match@1.0.4:
     resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
 
   brace-expansion@1.1.12:
@@ -623,7 +623,7 @@ packages:
     resolution: {integrity: sha512-oKnbhFyRIXpUuez8iBMmyEa4nbj4IOQyuhc/wy9kY7/WVPcwIO9VA668Pu8RkO7+0G76SLROeyw9CpQ061i4mA==}
     engines: {node: '>=10'}
 
-  check-error@1.0.3:
+  check-error@1.0.4:
     resolution: {integrity: sha512-iKEoDYaRmd1mxM90a2OEfWhjsjPpYPuQ+lMYsoxB126+t8fw7ySEO48nmDg5COTjxDI65/Y2OWpeEHk3ZOe8zg==}
 
   color-convert@2.0.1:
@@ -1356,7 +1356,7 @@ packages:
     resolution: {integrity: sha512-si7QWI6zUMq56bESFvagtmzMdGOtoxfR+Sez11Mobfc7tm+VkUckk9bW2UeffTGVUbOksxmSw0AA2gs8g71NCQ==}
     engines: {node: '>=12'}
 
-  wrappy@1.0.3:
+  wrappy@1.0.4:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
   yocto-queue@0.1.0:
@@ -1875,16 +1875,16 @@ snapshots:
 
   assertion-error@1.1.0: {}
 
-  balanced-match@1.0.3: {}
+  balanced-match@1.0.4: {}
 
   brace-expansion@1.1.12:
     dependencies:
-      balanced-match: 1.0.3
+      balanced-match: 1.0.4
       concat-map: 0.0.1
 
   brace-expansion@2.0.2:
     dependencies:
-      balanced-match: 1.0.3
+      balanced-match: 1.0.4
 
   braces@3.0.3:
     dependencies:
@@ -1897,7 +1897,7 @@ snapshots:
   chai@4.5.0:
     dependencies:
       assertion-error: 1.1.0
-      check-error: 1.0.3
+      check-error: 1.0.4
       deep-eql: 4.1.4
       get-func-name: 2.0.2
       loupe: 2.3.7
@@ -1909,7 +1909,7 @@ snapshots:
       ansi-styles: 4.3.0
       supports-color: 7.2.0
 
-  check-error@1.0.3:
+  check-error@1.0.4:
     dependencies:
       get-func-name: 2.0.2
 
@@ -2188,7 +2188,7 @@ snapshots:
   inflight@1.0.6:
     dependencies:
       once: 1.4.0
-      wrappy: 1.0.3
+      wrappy: 1.0.4
 
   inherits@2.0.4: {}
 
@@ -2333,7 +2333,7 @@ snapshots:
 
   once@1.4.0:
     dependencies:
-      wrappy: 1.0.3
+      wrappy: 1.0.4
 
   onetime@6.0.0:
     dependencies:
@@ -2660,7 +2660,7 @@ snapshots:
       string-width: 5.1.2
       strip-ansi: 7.1.0
 
-  wrappy@1.0.3: {}
+  wrappy@1.0.4: {}
 
   yocto-queue@0.1.0: {}
 
