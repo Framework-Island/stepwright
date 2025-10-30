@@ -415,7 +415,10 @@ export async function executeStep(
       try {
         // Ensure the page finished initial navigation
         try {
-          await page.waitForLoadState('domcontentloaded', { timeout: step.wait ?? 600000 });
+          const currentUrl = page.url();
+          const isFileUrl = currentUrl.startsWith('file://');
+          const timeout = isFileUrl ? 5000 : (step.wait ?? 600000);
+          await page.waitForLoadState('domcontentloaded', { timeout });
         } catch {}
 
         // Intercept responses to capture PDF even when displayed inline
@@ -523,51 +526,72 @@ export async function executeStep(
         // Try both approaches: wait for download event OR intercept response (unless already saved)
         if (!pdfSaved) {
           try {
-            // Reload the page to trigger route interception
-            const [response, download] = await Promise.all([
-              page.reload({ waitUntil: 'networkidle', timeout: step.wait ?? 60000 }).catch(() => null),
-              page.waitForEvent('download', { timeout: 5000 }).catch(() => null)
-            ]);
-
-            if (download) {
-              // If download event occurred, save it
-              await download.saveAs(resolvedPath);
-              savedPath = resolvedPath;
-              pdfSaved = true;
-              console.log(`   📄 PDF saved via download event to ${resolvedPath}`);
-            } else if (response) {
-              // Check if the response itself is a PDF
-              const contentType = response.headers()['content-type'] || '';
-              if (contentType.includes('application/pdf') && !pdfSaved) {
-                const buffer = await response.body();
-                if (buffer.length > 0) {
-                  fs.writeFileSync(resolvedPath, buffer);
-                  savedPath = resolvedPath;
-                  pdfSaved = true;
-                  console.log(
-                    `   📄 PDF saved via response body (${(buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
-                  );
-                }
-              } else {
-                // Wait a bit for route interception to capture it
-                await page.waitForTimeout(2000);
-                if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
-                  fs.writeFileSync(resolvedPath, interceptedData.buffer);
-                  savedPath = resolvedPath;
-                  pdfSaved = true;
-                  console.log(
-                    `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
-                  );
-                }
+            // Check if we're on a file:// URL - networkidle doesn't work well with file URLs
+            const reloadUrl = page.url();
+            const isFileUrl = reloadUrl.startsWith('file://');
+            const waitUntil = isFileUrl ? 'domcontentloaded' : 'networkidle';
+            const timeout = isFileUrl ? 3000 : (step.wait ?? 60000);
+            
+            // For file:// URLs, skip reload if no PDF URL is detected
+            if (isFileUrl && !reloadUrl.includes('.pdf')) {
+              console.log(`   📄 File URL detected without PDF - skipping savePDF (use printToPDF for HTML pages)`);
+              // Still check if we intercepted anything during navigation
+              await page.waitForTimeout(1000);
+              if (interceptedData.buffer && interceptedData.buffer.length > 0) {
+                fs.writeFileSync(resolvedPath, interceptedData.buffer);
+                savedPath = resolvedPath;
+                pdfSaved = true;
+                console.log(
+                  `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                );
               }
-            } else if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
-              // Fallback: use intercepted buffer
-              fs.writeFileSync(resolvedPath, interceptedData.buffer);
-              savedPath = resolvedPath;
-              pdfSaved = true;
-              console.log(
-                `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
-              );
+            } else {
+              // Reload the page to trigger route interception
+              const [response, download] = await Promise.all([
+                page.reload({ waitUntil, timeout }).catch(() => null),
+                page.waitForEvent('download', { timeout: 3000 }).catch(() => null)
+              ]);
+
+              if (download) {
+                // If download event occurred, save it
+                await download.saveAs(resolvedPath);
+                savedPath = resolvedPath;
+                pdfSaved = true;
+                console.log(`   📄 PDF saved via download event to ${resolvedPath}`);
+              } else if (response) {
+                // Check if the response itself is a PDF
+                const contentType = response.headers()['content-type'] || '';
+                if (contentType.includes('application/pdf') && !pdfSaved) {
+                  const buffer = await response.body();
+                  if (buffer.length > 0) {
+                    fs.writeFileSync(resolvedPath, buffer);
+                    savedPath = resolvedPath;
+                    pdfSaved = true;
+                    console.log(
+                      `   📄 PDF saved via response body (${(buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                    );
+                  }
+                } else {
+                  // Wait a bit for route interception to capture it
+                  await page.waitForTimeout(2000);
+                  if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
+                    fs.writeFileSync(resolvedPath, interceptedData.buffer);
+                    savedPath = resolvedPath;
+                    pdfSaved = true;
+                    console.log(
+                      `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                    );
+                  }
+                }
+              } else if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
+                // Fallback: use intercepted buffer
+                fs.writeFileSync(resolvedPath, interceptedData.buffer);
+                savedPath = resolvedPath;
+                pdfSaved = true;
+                console.log(
+                  `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                );
+              }
             }
           } catch (error: any) {
           console.log(`   📄 Error during PDF save: ${error.message}`);
