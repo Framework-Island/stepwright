@@ -402,8 +402,15 @@ export async function executeStep(
 
       const collectorKey = step.key || step.id || 'file';
       let savedPath: string | null = null;
-      // After the guard above, we can safely treat step.value as string
       const targetPathBase: string = step.value as string;
+      const resolvedPath: string = replaceDataPlaceholders(targetPathBase, collector) || targetPathBase;
+      const dir = path.dirname(resolvedPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      let pdfSaved = false;
+      const interceptedData: { buffer: Buffer | null } = { buffer: null };
 
       try {
         // Ensure the page finished initial navigation
@@ -411,249 +418,124 @@ export async function executeStep(
           await page.waitForLoadState('domcontentloaded', { timeout: step.wait ?? 600000 });
         } catch {}
 
-        // Try to resolve the direct PDF URL
-        let pdfUrl: string | null = null;
+        // Intercept responses to capture PDF even when displayed inline
+        await page.route('**/*', async route => {
+          const response = await route.fetch();
+          const contentType = response.headers()['content-type'] || '';
+          const url = route.request().url();
 
-        // 1) If the current URL points to a PDF (anywhere in the URL), use it or extract from query
+          // Check if this is a PDF response
+          if (contentType.includes('application/pdf') || url.includes('.pdf')) {
+            const buffer = await response.body();
+            if (!pdfSaved && buffer.length > 0) {
+              interceptedData.buffer = buffer;
+              // Save immediately when intercepted
+              try {
+                fs.writeFileSync(resolvedPath, buffer);
+                savedPath = resolvedPath;
+                pdfSaved = true;
+                console.log(
+                  `   📄 PDF intercepted and saved (${(buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                );
+              } catch (saveErr: any) {
+                console.log(`   📄 Failed to save intercepted PDF: ${saveErr.message}`);
+              }
+            }
+          }
+
+          // Continue with the normal response
+          await route.fulfill({ response });
+        });
+
         const currentUrl = page.url();
         console.log(`   📄 Current URL: ${currentUrl}`);
+
+        // Check if we're already on a PDF URL - wait a bit for interception
+        const isPdfUrl = currentUrl.includes('.pdf') || /\.pdf(\?|$)/i.test(currentUrl);
+        if (isPdfUrl && !pdfSaved) {
+          // Wait a moment for route interception to catch the PDF if it's already loading
+          await page.waitForTimeout(1000);
+        }
+
+        // Try both approaches: wait for download event OR intercept response
         try {
-          const u = new URL(currentUrl);
-          const candidates = [
-            u.searchParams.get('file'),
-            u.searchParams.get('src'),
-            u.searchParams.get('document'),
-            u.searchParams.get('url')
-          ].filter(Boolean) as string[];
-          const paramPdf = candidates.find(v => /\.pdf/i.test(v));
-          if (paramPdf) {
-            pdfUrl = new URL(paramPdf, u.href).toString();
-          }
-        } catch {}
-        if (!pdfUrl && /\.pdf/i.test(currentUrl)) {
-          pdfUrl = currentUrl;
-        }
+          // Reload the page to trigger route interception (unless already saved)
+          const [response, download] = await Promise.all([
+            !pdfSaved ? page.reload({ waitUntil: 'networkidle' }).catch(() => null) : Promise.resolve(null),
+            page.waitForEvent('download', { timeout: 5000 }).catch(() => null)
+          ]);
 
-        // 2) Otherwise, try to discover PDF source from common viewer elements
-        if (!pdfUrl) {
-          try {
-            pdfUrl = await page.evaluate(() => {
-              const getAbs = (src?: string | null) => {
-                if (!src) return null;
-                try {
-                  return new URL(src, window.location.href).toString();
-                } catch {
-                  return src;
-                }
-              };
-
-              const embed = document.querySelector('embed[type="application/pdf"]') as HTMLObjectElement | null;
-              if (embed && embed.getAttribute('src')) return getAbs(embed.getAttribute('src'));
-
-              const objectEl = document.querySelector('object[type="application/pdf"]') as HTMLObjectElement | null;
-              if (objectEl && objectEl.getAttribute('data')) return getAbs(objectEl.getAttribute('data'));
-
-              const iframe = Array.from(document.querySelectorAll('iframe')).find(f => {
-                const s = f.getAttribute('src') || '';
-                return /\.pdf/i.test(s) || s.includes('pdf');
-              }) as HTMLIFrameElement | undefined;
-              if (iframe && iframe.getAttribute('src')) return getAbs(iframe.getAttribute('src'));
-
-              return null;
-            });
-          } catch {}
-        }
-
-        // 3) Additional wait if requested (helps some viewers populate 'src')
-        if (!pdfUrl && step.wait && step.wait > 0) {
-          await page.waitForTimeout(step.wait);
-          try {
-            // Try again once after waiting
-            pdfUrl = await page.evaluate(() => {
-              const iframe = Array.from(document.querySelectorAll('iframe')).find(f => f.getAttribute('src')) as HTMLIFrameElement | undefined;
-              return iframe?.src || null;
-            });
-          } catch {}
-        }
-
-        // If we couldn't find a PDF URL, abort instead of rendering HTML with page.pdf
-        if (!pdfUrl) {
-          console.log('   📄 Direct PDF URL not found. Skipping save (no page.pdf fallback).');
-          break;
-        }
-
-        // Build candidate URLs and try them until one succeeds
-        const candidates: string[] = [];
-        const isAbsolute = /^https?:/i.test(pdfUrl);
-        if (isAbsolute) {
-          candidates.push(pdfUrl);
-        } else {
-          // 1) Same-origin resolution
-          candidates.push(new URL(pdfUrl, currentUrl).toString());
-        }
-
-        // Log URLs for debugging
-        console.log(`   📄 Current URL: ${currentUrl}`);
-        console.log(`   📄 Candidate PDF URLs:`, candidates);
-        // Download the first successful candidate
-        let downloadedBuffer: Buffer | null = null;
-        for (const candidateUrl of candidates) {
-          try {
-            const ctx = page.context();
-            const cookies = await ctx.cookies(candidateUrl);
-            const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-            const api = await request.newContext({
-              extraHTTPHeaders: {
-                ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-                Referer: currentUrl,
-                'User-Agent': 'Mozilla/5.0'
+          if (download) {
+            // If download event occurred, save it
+            await download.saveAs(resolvedPath);
+            savedPath = resolvedPath;
+            pdfSaved = true;
+            console.log(`   📄 PDF saved via download event to ${resolvedPath}`);
+          } else if (response) {
+            // Check if the response itself is a PDF
+            const contentType = response.headers()['content-type'] || '';
+            if (contentType.includes('application/pdf') && !pdfSaved) {
+              const buffer = await response.body();
+              if (buffer.length > 0) {
+                fs.writeFileSync(resolvedPath, buffer);
+                savedPath = resolvedPath;
+                pdfSaved = true;
+                console.log(
+                  `   📄 PDF saved via response body (${(buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                );
               }
-            });
-            const res = await api.get(candidateUrl);
-            if (res.ok()) {
-              downloadedBuffer = await res.body();
-              await api.dispose();
-              pdfUrl = candidateUrl; // final URL used
-              break;
             } else {
-              console.log(`   📄 GET ${candidateUrl} -> ${res.status()} ${res.statusText()}`);
-              await api.dispose();
-            }
-          } catch (e: any) {
-            console.log(`   📄 GET ${candidateUrl} failed: ${e.message}`);
-          }
-        }
-        if (!downloadedBuffer) {
-          console.log('   📄 All candidate PDF URLs failed. Trying viewer download fallback...');
-          
-          // Strategy 1: Try to extract PDF URL from embed element and fetch directly
-          let saved = false;
-          
-          try {
-            const embedPdfUrl = await page.evaluate(() => {
-              const embed = document.querySelector('embed[type="application/x-google-chrome-pdf"]') as HTMLEmbedElement;
-              if (embed && embed.getAttribute('original-url')) {
-                return embed.getAttribute('original-url');
-              }
-              return null;
-            });
-            
-            if (embedPdfUrl) {
-              console.log(`   📄 Found PDF URL in embed: ${embedPdfUrl}`);
-              try {
-                const ctx = page.context();
-                const cookies = await ctx.cookies(embedPdfUrl);
-                const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-                const api = await request.newContext({
-                  extraHTTPHeaders: {
-                    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-                    Referer: currentUrl,
-                    'User-Agent': 'Mozilla/5.0'
-                  }
-                });
-                const res = await api.get(embedPdfUrl);
-                if (res.ok()) {
-                  const body = await res.body();
-                  const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
-                  const dir = path.dirname(resolvedPath);
-                  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-                  fs.writeFileSync(resolvedPath, body);
-                  savedPath = resolvedPath;
-                  console.log(`   📄 PDF saved from embed URL to ${resolvedPath}`);
-                  await api.dispose();
-                  saved = true;
-                }
-                await api.dispose();
-              } catch (e: any) {
-                console.log(`   📄 Failed to fetch from embed URL: ${e.message}`);
+              // Wait a bit for route interception to capture it
+              await page.waitForTimeout(2000);
+              if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
+                fs.writeFileSync(resolvedPath, interceptedData.buffer);
+                savedPath = resolvedPath;
+                pdfSaved = true;
+                console.log(
+                  `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                );
               }
             }
-          } catch (e: any) {
-            console.log(`   📄 Embed extraction failed: ${e.message}`);
+          } else if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
+            // Fallback: use intercepted buffer
+            fs.writeFileSync(resolvedPath, interceptedData.buffer);
+            savedPath = resolvedPath;
+            pdfSaved = true;
+            console.log(
+              `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+            );
           }
-          
-          // Strategy 2: Wait for PDF viewer and click download button
-          if (!saved) {
-            console.log('   📄 Waiting for PDF viewer to load...');
-            try {
-              // Wait for pdf-viewer element to appear
-              await page.waitForSelector('pdf-viewer', { timeout: 10000 }).catch(() => null);
-              await page.waitForTimeout(2000); // Additional wait for shadow DOMs to initialize
-              
-              console.log('   📄 Searching for download button...');
-              const clicked = await page.evaluate(() => {
-                // Try direct selector path
-                const pdfViewer = document.querySelector('pdf-viewer');
-                if (pdfViewer && pdfViewer.shadowRoot) {
-                  const toolbar = pdfViewer.shadowRoot.querySelector('viewer-toolbar');
-                  if (toolbar && toolbar.shadowRoot) {
-                    const downloadControls = toolbar.shadowRoot.querySelector('viewer-download-controls');
-                    if (downloadControls && downloadControls.shadowRoot) {
-                      const saveButton = downloadControls.shadowRoot.querySelector('#save') as HTMLElement;
-                      if (saveButton) {
-                        saveButton.click();
-                        return true;
-                      }
-                    }
-                  }
-                }
-                
-                // Fallback: recursive search
-                function findAndClickDownload(root: Element | Document | ShadowRoot): boolean {
-                  const walker = document.createTreeWalker(root as Node, NodeFilter.SHOW_ELEMENT);
-                  let node: Node | null;
-                  while ((node = walker.nextNode())) {
-                    const el = node as HTMLElement;
-                    if (el.id === 'save' || el.id === 'download') {
-                      el.click();
-                      return true;
-                    }
-                    if (el.shadowRoot) {
-                      if (findAndClickDownload(el.shadowRoot)) return true;
-                    }
-                  }
-                  return false;
-                }
-                return findAndClickDownload(document);
-              }).catch(() => false);
-              
-              if (clicked) {
-                console.log('   📄 Found and clicked download button! Waiting for download...');
-                const dl = await page.waitForEvent('download', { timeout: 10000 }).catch(() => null);
-                if (dl) {
-                  const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
-                  const dir = path.dirname(resolvedPath);
-                  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-                  await dl.saveAs(resolvedPath);
-                  savedPath = resolvedPath;
-                  console.log(`   📄 PDF saved via download button to ${resolvedPath}`);
-                  saved = true;
-                } else {
-                  console.log('   📄 Download button clicked but no download event received.');
-                }
-              } else {
-                console.log('   📄 Download button not found.');
-              }
-            } catch (e: any) {
-              console.log(`   📄 PDF viewer approach failed: ${e.message}`);
-            }
+        } catch (error: any) {
+          console.log(`   📄 Error during PDF save: ${error.message}`);
+          // Still try to save intercepted buffer if available
+          if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
+            fs.writeFileSync(resolvedPath, interceptedData.buffer);
+            savedPath = resolvedPath;
+            pdfSaved = true;
+            console.log(
+              `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+            );
           }
-          
-          if (!saved) {
-            console.log('   📄 All viewer download fallbacks failed.');
-          }
-        } else {
-          const resolvedPath: string = (replaceDataPlaceholders(targetPathBase, collector) || targetPathBase);
-          const dir = path.dirname(resolvedPath);
-          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-          fs.writeFileSync(resolvedPath, downloadedBuffer);
-          savedPath = resolvedPath;
-          console.log(`   📄 PDF saved to ${resolvedPath} (from ${pdfUrl})`);
         }
       } catch (err: any) {
         console.log(`   📄 savePDF failed: ${err.message}`);
       } finally {
+        // Unroute to clean up
+        try {
+          await page.unroute('**/*');
+        } catch {}
+
+        // Verify file was saved
+        if (!pdfSaved && savedPath && fs.existsSync(savedPath)) {
+          pdfSaved = true;
+        }
+
         collector[collectorKey] = savedPath;
+        if (pdfSaved || savedPath) {
+          console.log(`   ✓ PDF successfully saved to ${savedPath}`);
+        } else {
+          console.log(`   ✗ Failed to save PDF`);
+        }
       }
       break;
     }
