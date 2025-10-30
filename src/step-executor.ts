@@ -420,92 +420,156 @@ export async function executeStep(
 
         // Intercept responses to capture PDF even when displayed inline
         await page.route('**/*', async route => {
-          const response = await route.fetch();
-          const contentType = response.headers()['content-type'] || '';
           const url = route.request().url();
+          const isPdfRequest = url.includes('.pdf');
 
-          // Check if this is a PDF response
-          if (contentType.includes('application/pdf') || url.includes('.pdf')) {
-            const buffer = await response.body();
-            if (!pdfSaved && buffer.length > 0) {
-              interceptedData.buffer = buffer;
-              // Save immediately when intercepted
-              try {
-                fs.writeFileSync(resolvedPath, buffer);
-                savedPath = resolvedPath;
-                pdfSaved = true;
-                console.log(
-                  `   📄 PDF intercepted and saved (${(buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
-                );
-              } catch (saveErr: any) {
-                console.log(`   📄 Failed to save intercepted PDF: ${saveErr.message}`);
-              }
-            }
+          // For non-PDF requests, continue normally for better performance
+          if (!isPdfRequest) {
+            await route.continue();
+            return;
           }
 
-          // Continue with the normal response
-          await route.fulfill({ response });
+          // For PDF requests, fetch but handle timeouts gracefully
+          try {
+            const response = await route.fetch().catch(async (err: any) => {
+              // If fetch fails (e.g., timeout), continue normally
+              console.log(`   📄 Route fetch failed for ${url}: ${err.message}`);
+              await route.continue();
+              return null;
+            });
+
+            if (!response) {
+              return; // Already continued above
+            }
+
+            const contentType = response.headers()['content-type'] || '';
+            
+            // Check if this is a PDF response
+            if (contentType.includes('application/pdf') || isPdfRequest) {
+              try {
+                const buffer = await response.body();
+                if (!pdfSaved && buffer.length > 0) {
+                  interceptedData.buffer = buffer;
+                  // Save immediately when intercepted
+                  try {
+                    fs.writeFileSync(resolvedPath, buffer);
+                    savedPath = resolvedPath;
+                    pdfSaved = true;
+                    const sizeMB = (buffer.length / 1024 / 1024).toFixed(2);
+                    console.log(
+                      `   📄 PDF intercepted and saved (${sizeMB} MB) to ${resolvedPath}`
+                    );
+                  } catch (saveErr: any) {
+                    console.log(`   📄 Failed to save intercepted PDF: ${saveErr.message}`);
+                  }
+                }
+              } catch (bodyErr: any) {
+                console.log(`   📄 Failed to read PDF body: ${bodyErr.message}`);
+                // Continue even if body read fails
+              }
+            }
+
+            // Continue with the normal response
+            await route.fulfill({ response });
+          } catch (err: any) {
+            // If anything fails, continue normally
+            console.log(`   📄 Route interception error: ${err.message}`);
+            await route.continue();
+          }
         });
 
         const currentUrl = page.url();
         console.log(`   📄 Current URL: ${currentUrl}`);
 
-        // Check if we're already on a PDF URL - wait a bit for interception
+        // Check if we're already on a PDF URL
         const isPdfUrl = currentUrl.includes('.pdf') || /\.pdf(\?|$)/i.test(currentUrl);
+        
+        // If we're on a PDF URL and haven't saved yet, try direct download first (more reliable for large files)
         if (isPdfUrl && !pdfSaved) {
-          // Wait a moment for route interception to catch the PDF if it's already loading
-          await page.waitForTimeout(1000);
+          try {
+            console.log(`   📄 Detected PDF URL, attempting direct download...`);
+            const ctx = page.context();
+            const cookies = await ctx.cookies(currentUrl);
+            const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+            const api = await request.newContext({
+              extraHTTPHeaders: {
+                ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+                Referer: currentUrl,
+                'User-Agent': 'Mozilla/5.0'
+              }
+            });
+            
+            // Use step.wait timeout (default to 5 minutes for large PDFs)
+            const res = await api.get(currentUrl, {
+              timeout: 300000
+            });
+            if (res.ok()) {
+              const buffer = await res.body();
+              fs.writeFileSync(resolvedPath, buffer);
+              savedPath = resolvedPath;
+              pdfSaved = true;
+              const sizeMB = (buffer.length / 1024 / 1024).toFixed(2);
+              console.log(`   📄 PDF downloaded directly (${sizeMB} MB) to ${resolvedPath}`);
+              await api.dispose();
+            } else {
+              await api.dispose();
+              console.log(`   📄 Direct download failed: ${res.status()} ${res.statusText()}`);
+            }
+          } catch (directErr: any) {
+            console.log(`   📄 Direct download failed: ${directErr.message}, trying route interception...`);
+          }
         }
 
-        // Try both approaches: wait for download event OR intercept response
-        try {
-          // Reload the page to trigger route interception (unless already saved)
-          const [response, download] = await Promise.all([
-            !pdfSaved ? page.reload({ waitUntil: 'networkidle' }).catch(() => null) : Promise.resolve(null),
-            page.waitForEvent('download', { timeout: 5000 }).catch(() => null)
-          ]);
+        // Try both approaches: wait for download event OR intercept response (unless already saved)
+        if (!pdfSaved) {
+          try {
+            // Reload the page to trigger route interception
+            const [response, download] = await Promise.all([
+              page.reload({ waitUntil: 'networkidle', timeout: step.wait ?? 60000 }).catch(() => null),
+              page.waitForEvent('download', { timeout: 5000 }).catch(() => null)
+            ]);
 
-          if (download) {
-            // If download event occurred, save it
-            await download.saveAs(resolvedPath);
-            savedPath = resolvedPath;
-            pdfSaved = true;
-            console.log(`   📄 PDF saved via download event to ${resolvedPath}`);
-          } else if (response) {
-            // Check if the response itself is a PDF
-            const contentType = response.headers()['content-type'] || '';
-            if (contentType.includes('application/pdf') && !pdfSaved) {
-              const buffer = await response.body();
-              if (buffer.length > 0) {
-                fs.writeFileSync(resolvedPath, buffer);
-                savedPath = resolvedPath;
-                pdfSaved = true;
-                console.log(
-                  `   📄 PDF saved via response body (${(buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
-                );
+            if (download) {
+              // If download event occurred, save it
+              await download.saveAs(resolvedPath);
+              savedPath = resolvedPath;
+              pdfSaved = true;
+              console.log(`   📄 PDF saved via download event to ${resolvedPath}`);
+            } else if (response) {
+              // Check if the response itself is a PDF
+              const contentType = response.headers()['content-type'] || '';
+              if (contentType.includes('application/pdf') && !pdfSaved) {
+                const buffer = await response.body();
+                if (buffer.length > 0) {
+                  fs.writeFileSync(resolvedPath, buffer);
+                  savedPath = resolvedPath;
+                  pdfSaved = true;
+                  console.log(
+                    `   📄 PDF saved via response body (${(buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                  );
+                }
+              } else {
+                // Wait a bit for route interception to capture it
+                await page.waitForTimeout(2000);
+                if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
+                  fs.writeFileSync(resolvedPath, interceptedData.buffer);
+                  savedPath = resolvedPath;
+                  pdfSaved = true;
+                  console.log(
+                    `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+                  );
+                }
               }
-            } else {
-              // Wait a bit for route interception to capture it
-              await page.waitForTimeout(2000);
-              if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
-                fs.writeFileSync(resolvedPath, interceptedData.buffer);
-                savedPath = resolvedPath;
-                pdfSaved = true;
-                console.log(
-                  `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
-                );
-              }
+            } else if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
+              // Fallback: use intercepted buffer
+              fs.writeFileSync(resolvedPath, interceptedData.buffer);
+              savedPath = resolvedPath;
+              pdfSaved = true;
+              console.log(
+                `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
+              );
             }
-          } else if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
-            // Fallback: use intercepted buffer
-            fs.writeFileSync(resolvedPath, interceptedData.buffer);
-            savedPath = resolvedPath;
-            pdfSaved = true;
-            console.log(
-              `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
-            );
-          }
-        } catch (error: any) {
+          } catch (error: any) {
           console.log(`   📄 Error during PDF save: ${error.message}`);
           // Still try to save intercepted buffer if available
           if (interceptedData.buffer && !pdfSaved && interceptedData.buffer.length > 0) {
@@ -515,6 +579,7 @@ export async function executeStep(
             console.log(
               `   📄 PDF saved via intercepted response (${(interceptedData.buffer.length / 1024).toFixed(2)} KB) to ${resolvedPath}`
             );
+          }
           }
         }
       } catch (err: any) {
@@ -540,7 +605,7 @@ export async function executeStep(
       break;
     }
     case 'printToPDF': {
-      // Click button to open print dialog and save as PDF
+      // Print current page as PDF using Playwright's page.pdf()
       if (!step.value) {
         throw new Error(`printToPDF step ${step.id} requires 'value' as target filepath`);
       }
@@ -549,68 +614,56 @@ export async function executeStep(
       let savedPath: string | null = null;
 
       try {
-        // Check if element exists first
-        const locator = locatorFor(page, step.object_type as SelectorType | undefined, step.object ?? '');
-        const count = await locator.count();
-        
-        if (count === 0) {
-          console.log(`   ⚠️  Element not found: ${step.object} - skipping printToPDF action`);
-          return;
+        // If object is provided, click it first (for backward compatibility)
+        if (step.object) {
+          try {
+            const locator = locatorFor(page, step.object_type as SelectorType | undefined, step.object);
+            const count = await locator.count();
+            
+            if (count > 0) {
+              await locator.click();
+              console.log(`   🖨️  Clicked element: ${step.object}`);
+              // Wait a bit for any navigation or content changes
+              await page.waitForTimeout(step.wait ?? 1000);
+            } else {
+              console.log(`   ⚠️  Element not found: ${step.object} - proceeding to print current page`);
+            }
+          } catch (clickErr: any) {
+            console.log(`   ⚠️  Failed to click element ${step.object}: ${clickErr.message} - proceeding to print current page`);
+          }
         }
 
-        console.log(`   🖨️  Attempting to print PDF from element: ${step.object}`);
-        
-        // Set up download listener with shorter timeout
-        const downloadPromise = page.waitForEvent('download', { timeout: 10000 }).catch(() => null);
-        
-        // Click the button that opens print dialog
-        await locator.click();
-        console.log(`   🖨️  Clicked print button`);
-        
-        // Wait a moment for print dialog to appear
-        await page.waitForTimeout(2000);
-        
-        // Try multiple approaches to handle print dialog
-        let download = null;
-        
+        // Ensure the page finished loading
         try {
-          // Approach 1: Try keyboard shortcuts
-          console.log(`   🖨️  Trying keyboard shortcuts (Ctrl+P)`);
-          await page.keyboard.press('Control+P');
-          await page.waitForTimeout(2000);
-          await page.keyboard.press('Enter');
-          
-          // Wait for download with shorter timeout
-          download = await downloadPromise;
-        } catch (keyboardErr: any) {
-          console.log(`   🖨️  Keyboard shortcuts failed: ${keyboardErr.message}`);
-          
-          // Approach 2: Try clicking the print button again if it's still there
-          try {
-            console.log(`   🖨️  Trying direct print button click`);
-            await locator.click();
-            await page.waitForTimeout(3000);
-            download = await page.waitForEvent('download', { timeout: 5000 }).catch(() => null);
-          } catch (clickErr: any) {
-            console.log(`   🖨️  Direct click also failed: ${clickErr.message}`);
-          }
+          await page.waitForLoadState('networkidle', { timeout: step.wait ?? 10000 });
+        } catch {}
+
+        // Resolve file path with placeholders
+        const targetPathBase: string = step.value as string;
+        const resolvedPath: string = replaceDataPlaceholders(targetPathBase, collector) || targetPathBase;
+        const dir = path.dirname(resolvedPath);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
         }
+
+        console.log(`   🖨️  Generating PDF from current page...`);
         
-        if (download) {
-          // Ensure directory exists
-          const savePath = step.value;
-          const dir = path.dirname(savePath);
-          if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
+        // Use Playwright's page.pdf() to generate PDF
+        const pdfBuffer = await page.pdf({
+          format: 'A4',
+          printBackground: true,
+          margin: {
+            top: '0.5in',
+            right: '0.5in',
+            bottom: '0.5in',
+            left: '0.5in'
           }
-          
-          // Save the downloaded file
-          await download.saveAs(savePath);
-          savedPath = savePath;
-          console.log(`   🖨️  Print PDF saved to ${savePath}`);
-        } else {
-          console.log(`   🖨️  No download event detected - print dialog may not have worked`);
-        }
+        });
+
+        // Save the PDF buffer to file
+        fs.writeFileSync(resolvedPath, pdfBuffer);
+        savedPath = resolvedPath;
+        console.log(`   🖨️  PDF saved to ${resolvedPath} (${(pdfBuffer.length / 1024).toFixed(2)} KB)`);
         
       } catch (err: any) {
         console.log(`   🖨️  PrintToPDF failed: ${err.message}`);
