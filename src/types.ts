@@ -11,7 +11,7 @@ export interface BaseStep {
   description?: string;
   object_type?: SelectorType;
   object?: string;
-  action: 'navigate' | 'input' | 'click' | 'data' | 'scroll' | 'eventBaseDownload' | 'foreach' | 'open' | 'savePDF' | 'printToPDF' | 'downloadPDF' | 'downloadFile';
+  action: 'navigate' | 'input' | 'click' | 'data' | 'scroll' | 'reload' | 'eventBaseDownload' | 'foreach' | 'open' | 'savePDF' | 'printToPDF' | 'downloadPDF' | 'downloadFile';
   value?: string;
   key?: string; // property key when collecting data
   data_type?: DataType;

@@ -25,6 +25,12 @@ async function basicExample() {
           data_type: 'text'
         },
         {
+          id: "reload",
+          action: 'reload',
+          value: 'load',
+          wait: 2000
+        },
+        {
           id: 'get_description',
           action: 'data',
           object_type: 'xpath',
@@ -40,7 +46,7 @@ async function basicExample() {
          console.log('🚀 Starting scraper...');
      const results = await runScraper(templates, {
        browser: {
-         headless: true,
+         headless: false,
          args: [
            '--no-sandbox',
            '--disable-setuid-sandbox',

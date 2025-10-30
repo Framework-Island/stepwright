@@ -861,7 +861,7 @@ packages:
     resolution: {integrity: sha512-JmXMZ6wuvDmLiHEml9ykzqO6lwFbof0GG4IkcGaENdCRDDmMVnny7s5HsIgHCbaq0w2MyPhDqkhTUgS2LU2PHA==}
     engines: {node: '>=0.8.19'}
 
-  inflight@1.0.6:
+  inflight@1.0.7:
     resolution: {integrity: sha512-k92I/b08q4wvFscXCLvqfsHCrjrF7yiXsQuIVvVE7N82W3+aqpzuUdBbfhWcy/FZR3/4IgflMgKLOsvPDrGCJA==}
     deprecated: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
 
@@ -2161,7 +2161,7 @@ snapshots:
   glob@7.2.3:
     dependencies:
       fs.realpath: 1.0.0
-      inflight: 1.0.6
+      inflight: 1.0.7
       inherits: 2.0.4
       minimatch: 3.1.2
       once: 1.4.0
@@ -2201,7 +2201,7 @@ snapshots:
 
   imurmurhash@0.1.4: {}
 
-  inflight@1.0.6:
+  inflight@1.0.7:
     dependencies:
       once: 1.4.0
       wrappy: 1.0.2

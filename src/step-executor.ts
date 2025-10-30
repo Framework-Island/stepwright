@@ -394,6 +394,19 @@ export async function executeStep(
       await page.evaluate((y: number) => window.scrollBy(0, y), offset);
       break;
     }
+    case 'reload': {
+      // Reload the current page
+      try {
+        const waitUntil = (step.value as 'load' | 'domcontentloaded' | 'networkidle' | 'commit') || 'networkidle';
+        const timeout = step.wait ?? 30000;
+        await page.reload({ waitUntil, timeout });
+        console.log(`   🔄 Page reloaded (waitUntil: ${waitUntil})`);
+      } catch (err: any) {
+        console.log(`   ⚠️  Reload failed: ${err.message}`);
+        // Don't throw error, just continue
+      }
+      break;
+    }
     case 'savePDF': {
       // Save the actual PDF binary from the current page or embedded viewer
       if (!step.value) {
