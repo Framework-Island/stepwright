@@ -12,9 +12,8 @@ async function advancedExample() {
         },
         {
           id: 'wait_for_page',
-          action: 'scroll',
-          value: '100',
-          wait: 3000
+          action: 'wait',
+          value: '3000'
         }
       ],
       perPageSteps: [

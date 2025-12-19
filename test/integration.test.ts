@@ -330,5 +330,131 @@ describe('Integration Tests', () => {
       expect(results[0].title).toBe('StepWright Test Page');
       expect(results[0].page_title).toBe('StepWright Test Page');
     });
+
+    it('should handle wait action with value property', async () => {
+      const templates :TabTemplate[] = [
+        {
+          tab: 'wait_test',
+          steps: [
+            {
+              id: 'navigate',
+              action: 'navigate',
+              value: testPageUrl
+            },
+            {
+              id: 'wait_before_extraction',
+              action: 'wait',
+              value: '500'
+            },
+            {
+              id: 'get_title',
+              action: 'data',
+              object_type: 'id',
+              object: 'main-title',
+              key: 'title',
+              data_type: 'text'
+            }
+          ]
+        }
+      ];
+
+      const startTime = Date.now();
+      const results = await runScraper(templates);
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+
+      expect(results).toHaveLength(1);
+      expect(results[0].title).toBe('StepWright Test Page');
+      // Verify that wait actually occurred (allowing some margin for test execution)
+      expect(duration).toBeGreaterThanOrEqual(400);
+    });
+
+    it('should handle wait action with wait property', async () => {
+      const templates :TabTemplate[] = [
+        {
+          tab: 'wait_test_wait_prop',
+          steps: [
+            {
+              id: 'navigate',
+              action: 'navigate',
+              value: testPageUrl
+            },
+            {
+              id: 'wait_before_extraction',
+              action: 'wait',
+              wait: 300
+            },
+            {
+              id: 'get_title',
+              action: 'data',
+              object_type: 'id',
+              object: 'main-title',
+              key: 'title',
+              data_type: 'text'
+            }
+          ]
+        }
+      ];
+
+      const startTime = Date.now();
+      const results = await runScraper(templates);
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+
+      expect(results).toHaveLength(1);
+      expect(results[0].title).toBe('StepWright Test Page');
+      // Verify that wait actually occurred (allowing some margin for test execution)
+      expect(duration).toBeGreaterThanOrEqual(200);
+    });
+
+    it('should handle wait action in sequence with other actions', async () => {
+      const templates :TabTemplate[] = [
+        {
+          tab: 'wait_sequence_test',
+          steps: [
+            {
+              id: 'navigate',
+              action: 'navigate',
+              value: testPageUrl
+            },
+            {
+              id: 'wait_after_navigate',
+              action: 'wait',
+              value: '200'
+            },
+            {
+              id: 'fill_search',
+              action: 'input',
+              object_type: 'id',
+              object: 'search-box',
+              value: 'test search'
+            },
+            {
+              id: 'wait_after_input',
+              action: 'wait',
+              value: '200'
+            },
+            {
+              id: 'get_search_value',
+              action: 'data',
+              object_type: 'id',
+              object: 'search-box',
+              key: 'search_value',
+              data_type: 'value'
+            }
+          ]
+        }
+      ];
+
+      const startTime = Date.now();
+      const results = await runScraper(templates);
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+
+      expect(results).toHaveLength(1);
+      expect(results[0].search_value).toBe('test search');
+      // Verify that waits occurred (allowing some margin for test execution)
+      expect(duration).toBeGreaterThanOrEqual(300);
+    });
   });
 });

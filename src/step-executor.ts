@@ -394,6 +394,25 @@ export async function executeStep(
       await page.evaluate((y: number) => window.scrollBy(0, y), offset);
       break;
     }
+    case 'wait': {
+      // Wait for a specified duration in milliseconds
+      // Duration can be provided via step.value (as string) or step.wait (as number)
+      let duration = 0;
+      if (step.value) {
+        duration = parseInt(step.value, 10);
+      } else if (step.wait) {
+        duration = step.wait;
+      } else {
+        console.log(`   ⚠️  Wait step ${step.id} requires 'value' (duration in ms) or 'wait' property`);
+        break;
+      }
+      
+      if (duration > 0) {
+        console.log(`   ⏳ Waiting ${duration}ms...`);
+        await page.waitForTimeout(duration);
+      }
+      break;
+    }
     case 'reload': {
       // Reload the current page
       try {

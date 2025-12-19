@@ -12,22 +12,25 @@ async function basicExample() {
          },
          {
            id: 'wait_for_page',
-           action: 'scroll',
-           value: '100',
-           wait: 2000
+           action: 'wait',
+           value: '2000'
          },
-        {
-          id: 'get_title',
-          action: 'data',
-          object_type: 'tag',
-          object: 'h1',
-          key: 'title',
-          data_type: 'text'
-        },
+         {
+           id: 'get_title',
+           action: 'data',
+           object_type: 'tag',
+           object: 'h1',
+           key: 'title',
+           data_type: 'text'
+         },
         {
           id: "reload",
           action: 'reload',
-          value: 'load',
+          value: 'load'
+        },
+        {
+          id: 'wait_after_reload',
+          action: 'wait',
           wait: 2000
         },
         {

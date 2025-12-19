@@ -10,9 +10,8 @@ async function basicExample() {
             },
             {
                 id: 'wait_for_page',
-                action: 'scroll',
-                value: '100',
-                wait: 2000
+                action: 'wait',
+                value: '2000'
             },
             {
                 id: 'get_title',
@@ -21,6 +20,11 @@ async function basicExample() {
                 object: 'h1',
                 key: 'title',
                 data_type: 'text'
+            },
+            {
+                id: 'wait_after_title',
+                action: 'wait',
+                wait: 1000
             },
             {
                 id: 'get_description',
