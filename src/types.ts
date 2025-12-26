@@ -19,6 +19,7 @@ export interface BaseStep {
   terminateonerror?: boolean;
   subSteps?: BaseStep[]; // for foreach/open
   autoScroll?: boolean; // for foreach action - controls automatic scrolling (default: true)
+  index_key?: string; // custom index placeholder for loops (e.g., 'j', 'k')
 }
 
 export interface PaginationConfig {

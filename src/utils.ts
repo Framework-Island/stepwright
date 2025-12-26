@@ -18,9 +18,11 @@ import { SelectorType } from './types';
  * @since v1.0.0
  * @company Framework Island
  */
-export function replaceIndexPlaceholders(text: string | undefined, i: number): string | undefined {
+export function replaceIndexPlaceholders(text: string | undefined, i: number, char: string = 'i'): string | undefined {
   if (!text) return text;
-  return text.replace(/\{\{\s*i\s*\}\}/g, i.toString()).replace(/\{\{\s*i_plus1\s*\}\}/g, (i+1).toString());
+  const regex = new RegExp(`\\{\\{\\s*${char}\\s*\\}\\}`, 'g');
+  const plus1Regex = new RegExp(`\\{\\{\\s*${char}_plus1\\s*\\}\\}`, 'g');
+  return text.replace(regex, i.toString()).replace(plus1Regex, (i + 1).toString());
 }
 
 /**
@@ -97,13 +99,13 @@ export function locatorFor(page: Page, type: SelectorType | undefined, selector:
  * @since v1.0.0
  * @company Framework Island
  */
-export function cloneStepWithIndex(step: import('./types').BaseStep, idx: number): import('./types').BaseStep {
+export function cloneStepWithIndex(step: import('./types').BaseStep, idx: number, char: string = 'i'): import('./types').BaseStep {
   const cloned: import('./types').BaseStep = { ...step };
-  cloned.object = replaceIndexPlaceholders(cloned.object, idx);
-  cloned.value = replaceIndexPlaceholders(cloned.value, idx);
-  cloned.key = replaceIndexPlaceholders(cloned.key, idx);
+  cloned.object = replaceIndexPlaceholders(cloned.object, idx, char);
+  cloned.value = replaceIndexPlaceholders(cloned.value, idx, char);
+  cloned.key = replaceIndexPlaceholders(cloned.key, idx, char);
   if (cloned.subSteps && cloned.subSteps.length > 0) {
-    cloned.subSteps = cloned.subSteps.map((sub) => cloneStepWithIndex(sub, idx));
+    cloned.subSteps = cloned.subSteps.map((sub) => cloneStepWithIndex(sub, idx, char));
   }
   return cloned;
 }
@@ -121,23 +123,34 @@ export function cloneStepWithIndex(step: import('./types').BaseStep, idx: number
  * @company Framework Island
  */
 export function flattenNestedForeachResults(item: Record<string, any>): any {
+  // Extract context keys (keys NOT starting with item_)
+  const context: Record<string, any> = {};
+  Object.keys(item).forEach(k => {
+    if (!k.startsWith('item_')) {
+      context[k] = item[k];
+    }
+  });
+
   // Check if item contains nested item_* keys (from nested foreach)
   const nestedItemKeys = Object.keys(item).filter(k => k.startsWith('item_'));
   if (nestedItemKeys.length > 0) {
     // Flatten nested items into an array
     const flattenedItems: any[] = [];
-    for (const k of nestedItemKeys.sort((a, b) => {
+    const sortedKeys = nestedItemKeys.sort((a, b) => {
       const aIdx = parseInt(a.split('_')[1]);
       const bIdx = parseInt(b.split('_')[1]);
       return aIdx - bIdx;
-    })) {
+    });
+
+    for (const k of sortedKeys) {
       if (item[k] && Object.keys(item[k]).length > 0) {
-        flattenedItems.push(item[k]);
+        // Merge context into the nested item
+        flattenedItems.push({ ...context, ...item[k] });
       }
     }
     return flattenedItems;
   } else {
-    // No nested items, return item as is
+    // No nested items, return item with context (already in item)
     return item;
   }
 }

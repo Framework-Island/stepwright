@@ -141,7 +141,17 @@ export async function executeStep(
     case 'click': {
       try {
         // Check if element exists first
-        const locator = locatorFor(page, step.object_type as SelectorType | undefined, step.object ?? '');
+        const locator = scopeLocator
+          ? locatorFor(
+              scopeLocator as any,
+              step.object_type as SelectorType | undefined,
+              step.object ?? ''
+            )
+          : locatorFor(
+              page,
+              step.object_type as SelectorType | undefined,
+              step.object ?? ''
+            );
         const count = await locator.count();
         
         if (count === 0) {
@@ -267,7 +277,17 @@ export async function executeStep(
       if (!step.subSteps || step.subSteps.length === 0) {
         throw new Error('foreach step requires subSteps');
       }
-      const locatorAll = locatorFor(page, step.object_type as SelectorType | undefined, step.object);
+      const locatorAll = scopeLocator
+        ? locatorFor(
+            scopeLocator as any,
+            step.object_type as SelectorType | undefined,
+            step.object
+          )
+        : locatorFor(
+            page,
+            step.object_type as SelectorType | undefined,
+            step.object
+          );
       try {
         await locatorAll.first().waitFor({ state: 'attached', timeout: step.wait ?? 5000 });
       } catch {}
@@ -283,11 +303,20 @@ export async function executeStep(
         }
 
         // Create a separate collector for each iteration
+        // Initialize with parent context (non-item_* keys) to preserve metadata
         const itemCollector: Record<string, any> = {};
+        Object.keys(collector).forEach(k => {
+          if (!k.startsWith('item_')) {
+            itemCollector[k] = collector[k];
+          }
+        });
+
+        // Use the specified index key or default to 'i'
+        const indexKey = step.index_key || 'i';
 
         // For each subStep clone and replace placeholders
         for (const s of step.subSteps) {
-          const cloned = cloneStepWithIndex(s, idx);
+          const cloned = cloneStepWithIndex(s, idx, indexKey);
           try {
             await executeStep(page, cloned, itemCollector, onResult, current);
           } catch (err: any) {
@@ -307,8 +336,6 @@ export async function executeStep(
           );
 
           // Emit the result immediately for streaming
-          // We need to access the onResult callback from the parent context
-          // This is a bit of a hack, but it works for immediate streaming
           if ((global as any).onResultCallback) {
             try {
               const flattenedResult = flattenNestedForeachResults(itemCollector);
@@ -329,7 +356,17 @@ export async function executeStep(
       
       try {
         // locate link and check if it exists
-        const linkLoc = locatorFor(page, step.object_type as SelectorType | undefined, step.object);
+        const linkLoc = scopeLocator
+          ? locatorFor(
+              scopeLocator as any,
+              step.object_type as SelectorType | undefined,
+              step.object
+            )
+          : locatorFor(
+              page,
+              step.object_type as SelectorType | undefined,
+              step.object
+            );
         const count = await linkLoc.count();
         
         if (count === 0) {
@@ -365,8 +402,13 @@ export async function executeStep(
           await newPage.waitForLoadState('networkidle');
         }
 
-        // Pass the parent collector data to subSteps so they can access meeting_title, meeting_date, etc.
-        const innerCollected: Record<string, any> = { ...collector };
+        // Pass only the parent context (non-item keys) to subSteps
+        const innerCollected: Record<string, any> = {};
+        Object.keys(collector).forEach(k => {
+          if (!k.startsWith('item_')) {
+            innerCollected[k] = collector[k];
+          }
+        });
         for (const s of step.subSteps) {
           const cloned: BaseStep = { ...s };
           try {
@@ -673,7 +715,17 @@ export async function executeStep(
         // If object is provided, click it first (for backward compatibility)
         if (step.object) {
           try {
-            const locator = locatorFor(page, step.object_type as SelectorType | undefined, step.object);
+            const locator = scopeLocator
+              ? locatorFor(
+                  scopeLocator as any,
+                  step.object_type as SelectorType | undefined,
+                  step.object
+                )
+              : locatorFor(
+                  page,
+                  step.object_type as SelectorType | undefined,
+                  step.object
+                );
             const count = await locator.count();
             
             if (count > 0) {
@@ -743,11 +795,17 @@ export async function executeStep(
 
       try {
         // 1) Find the link and get its href
-        const link = locatorFor(
-          page,
-          step.object_type as SelectorType | undefined,
-          step.object
-        );
+        const link = scopeLocator
+          ? locatorFor(
+              scopeLocator as any,
+              step.object_type as SelectorType | undefined,
+              step.object
+            )
+          : locatorFor(
+              page,
+              step.object_type as SelectorType | undefined,
+              step.object
+            );
         const present = (await link.count()) > 0;
         if (!present) {
           console.log(`   ⚠️  PDF link not found: ${step.object}`);
