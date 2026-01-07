@@ -325,23 +325,48 @@ export async function executeStep(
           }
         }
 
-        // Store the item collector with a unique key for this iteration
-        collector[`item_${idx}`] = itemCollector;
+        // Store the item collector
+        if (step.key) {
+          if (!collector[step.key]) {
+            collector[step.key] = [];
+          }
 
-        // If we have collected data for this item, emit it immediately for streaming
-        if (Object.keys(itemCollector).length > 0) {
-          console.log(
-            `   📋 Collected data for item ${idx}:`,
-            Object.keys(itemCollector)
-          );
+          // Flatten if there are nested item_* keys before storing under the key
+          const resultToStore = flattenNestedForeachResults(itemCollector);
+          
+          if (Array.isArray(resultToStore)) {
+            collector[step.key].push(...resultToStore);
+          } else {
+            // If it's a single object, clean it of parent metadata before pushing
+            // this keeps nested objects clean and avoids redundant data
+            const parentKeys = new Set(Object.keys(collector).filter(k => !k.startsWith('item_')));
+            const cleanedItem: Record<string, any> = {};
+            Object.keys(itemCollector).forEach(k => {
+              if (!parentKeys.has(k) || k === indexKey) {
+                cleanedItem[k] = itemCollector[k];
+              }
+            });
+            collector[step.key].push(cleanedItem);
+          }
+        } else {
+          // Default behavior: store with item_ prefix (enables flattening and streaming)
+          collector[`item_${idx}`] = itemCollector;
 
-          // Emit the result immediately for streaming
-          if ((global as any).onResultCallback) {
-            try {
-              const flattenedResult = flattenNestedForeachResults(itemCollector);
-              await (global as any).onResultCallback(flattenedResult, idx);
-            } catch (err) {
-              console.log(`   ⚠️  Callback failed for item ${idx}: ${err}`);
+          // If we have collected data for this item, emit it immediately for streaming
+          if (Object.keys(itemCollector).length > 0) {
+            console.log(
+              `   📋 Collected data for item ${idx}:`,
+              Object.keys(itemCollector)
+            );
+
+            // Emit the result immediately for streaming
+            if ((global as any).onResultCallback) {
+              try {
+                const flattenedResult = flattenNestedForeachResults(itemCollector);
+                await (global as any).onResultCallback(flattenedResult, idx);
+              } catch (err) {
+                console.log(`   ⚠️  Callback failed for item ${idx}: ${err}`);
+              }
             }
           }
         }
